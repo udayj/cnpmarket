@@ -160,11 +160,10 @@ module.exports = {
       },
     },
     polytest: {
-      url: "https://speedy-nodes-nyc.moralis.io/XXXXXXXXXXXXXXXXXXXXXXX/polygon/mumbai", // <---- YOUR MORALIS ID! (not limited to infura)
+      url : "https://polygon-mumbai.g.alchemy.com/v2/TzL04FnJ8Nk1b7Nv7bfZ9NCx2iEdyLH3",
+      accounts: ["0x8df48958afc88c4dfc318ecc8ff0fdde4700bcea1ba2071a3878b4a19cfaca55"], // <---- YOUR MORALIS ID! (not limited to infura)
       gasPrice: 1000000000,
-      accounts: {
-        mnemonic: mnemonic(),
-      },
+      gas: 1000000
     },
 
     matic: {
@@ -309,7 +308,8 @@ module.exports = {
   },
   namedAccounts: {
     deployer: {
-      default: 0, // here this will by default take the first account as deployer
+      //default: 0, // here this will by default take the first account as deployer
+      polytest: '0x40C93BCd74254aDeBA26bE38e144705c3b5c9F35',
     },
   },
   etherscan: {

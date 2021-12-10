@@ -26,20 +26,20 @@ contract CNPMarket is ChainlinkClient, Ownable{
     event DealCompleted(uint dealId);
     //address payable _cEtherContract=payable(0x41B5844f4680a8C38fBb695b7F9CFd1F64474a72);
     address public oracle_alarm=0xc8D925525CA8759812d0c299B90247917d4d4b7C;
-    bytes32 public jobId_alarm="6c7a0cf966184f6b935e6dc1c8d26d3e";
+    bytes32 private jobId_alarm="6c7a0cf966184f6b935e6dc1c8d26d3e";
     address public oracle_price=0xc8D925525CA8759812d0c299B90247917d4d4b7C;
-    bytes32 public jobId_price="bbf0badad29d49dc887504bacfbb905b";
-    uint256 private fee=0.01*10**18;
+    bytes32 private jobId_price="bbf0badad29d49dc887504bacfbb905b";
+    uint256 private fee=0.05*10**18;
     IBentoBoxMinimal bentoContract;
     ISETH maticx;
     IInstantDistributionAgreementV1 ida;
     ISuperfluid host;
 
-    mapping (bytes32 => uint) requestIdTimerToDealId;
-    mapping (bytes32 => uint) requestIdPriceToDealId;
+    mapping (bytes32 => uint) public requestIdTimerToDealId;
+    mapping (bytes32 => uint) public requestIdPriceToDealId;
     mapping (uint => bool) poolIdExists;
     Deal[] public deals;
-    
+    bytes32[] public requestIds;
     struct Deal {
         address payable initiator;
         address payable joiner1;
@@ -55,10 +55,12 @@ contract CNPMarket is ChainlinkClient, Ownable{
         uint256 amountBento;
         uint256 shareBento;
         uint256 interest;
+        uint128[] units;
     }
     
+    
     constructor () {
-        setPublicChainlinkToken();
+        setChainlinkToken(0x326C977E6efc84E512bB9C30f76E30c160eD06FB);
         bentoContract = IBentoBoxMinimal(address(0xF5BCE5077908a1b7370B9ae04AdC565EBd643966));
         bentoContract.registerProtocol();
         maticx=ISETH(0x96B82B65ACF7072eFEb00502F45757F254c2a0D4);
@@ -66,6 +68,38 @@ contract CNPMarket is ChainlinkClient, Ownable{
         host=ISuperfluid(0xEB796bdb90fFA0f28255275e16936D25d3418603);
     }
 
+    function setFee(uint256 _fee) public {
+        fee=_fee;
+    }
+
+   
+
+
+    /*
+    @param _val - value for the bet, both parties will need to place bet for same amount
+    @param _upOrDown - 1 indicates initiator is betting price will be >= _val, any other value means <
+    @param _timer - number of seconds to wait after deal is joined to verify result of bet
+    @return dealId - to be used by joiners to join this bet
+    */
+    function initiateDeal(uint256 _val, uint _upOrDown, uint _timer, uint _groupId) external payable returns(uint256) {
+        
+        require(msg.value>0,"Need to stake non-zero deal amount");
+        uint[] memory dealAmount = new uint[](3);
+        dealAmount[0]=msg.value;
+        bool[] memory winners = new bool[](3);
+        uint[] memory upOrDown = new uint[](3);
+        uint128[] memory units = new uint128[](3);
+        upOrDown[0]=_upOrDown;
+        deals.push(Deal(payable(msg.sender),payable(0), payable(0),dealAmount, winners,upOrDown,_val,_timer,0,0,_groupId,0,0,0,units));
+        uint dealId=deals.length-1;
+        emit NewDeal(dealId, msg.sender, _val, _upOrDown,_timer);
+        if(!poolIdExists[_groupId]) {
+          poolIdExists[_groupId]=true;
+          create(_groupId);
+        }    
+        return dealId;
+        
+    }
     function setBentoAddress(address _address) public {
         bentoContract = IBentoBoxMinimal(_address);
         bentoContract.registerProtocol();
@@ -166,8 +200,11 @@ contract CNPMarket is ChainlinkClient, Ownable{
         return (deals[_dealId].joiner1,deals[_dealId].joiner2);
     }
 
+    function getDealShare(uint _dealId) public view returns(uint256) {
+        return deals[_dealId].shareBento;
+    }
 
-    function upgrade(uint amount) public payable{
+    function upgrade(uint amount) public {
 
         maticx.upgradeByETH{value:amount}();
 
@@ -247,30 +284,7 @@ contract CNPMarket is ChainlinkClient, Ownable{
         
         return newCtx;
     }
-    /*
-    @param _val - value for the bet, both parties will need to place bet for same amount
-    @param _upOrDown - 1 indicates initiator is betting price will be >= _val, any other value means <
-    @param _timer - number of seconds to wait after deal is joined to verify result of bet
-    @return dealId - to be used by joiner to join this bet
-    */
-    function initiateDeal(uint256 _val, uint _upOrDown, uint _timer, uint _groupId) external payable returns(uint256) {
-        
-        require(msg.value>0,"Need to stake non-zero deal amount");
-        uint[] memory dealAmount = new uint[](3);
-        dealAmount[0]=msg.value;
-        bool[] memory winners = new bool[](3);
-        uint[] memory upOrDown = new uint[](3);
-        upOrDown[0]=_upOrDown;
-        deals.push(Deal(payable(msg.sender),payable(0), payable(0),dealAmount, winners,upOrDown,_val,_timer,0,0,_groupId,0,0,0));
-        uint dealId=deals.length-1;
-        emit NewDeal(dealId, msg.sender, _val, _upOrDown,_timer);
-        if(!poolIdExists[_groupId]) {
-          poolIdExists[_groupId]=true;
-          create(_groupId);
-        }    
-        return dealId;
-        
-    }
+    
     
 
     
@@ -279,6 +293,9 @@ contract CNPMarket is ChainlinkClient, Ownable{
         return deals[_dealId].winners;
     }
     
+    function getDealUnits(uint _dealId) public view returns(uint128[] memory) {
+        return deals[_dealId].units;
+    }
     
     
     function getDealState(uint _dealId) public view returns(uint) {
@@ -290,8 +307,10 @@ contract CNPMarket is ChainlinkClient, Ownable{
     }
     /*
     @param _dealId - deal id generated when initiating address creates the bet
+    @param _groupId - group id to ensure the same addresses in a pool join the bet
     @returns true if all goes well
-    @dev - this function closes the bet when both parties stake same amount, deposits the staked amount to compound, calls delay
+    @dev - if this is the 1st joiner save values in the deal struct, if 2nd joiner then additionally deposit funds to bento
+           so as to earn interest
     */
     
     function joinDeal(uint _dealId,uint _groupId,uint _upOrDown) external payable returns(bool) {
@@ -303,13 +322,14 @@ contract CNPMarket is ChainlinkClient, Ownable{
         require(deal.groupId==_groupId,"Incorrect group");
 
         if(deal.state==1) {
-          deal.joiner2==payable(msg.sender);
+          deal.joiner2=payable(msg.sender);
           deal.dealAmount[2]=msg.value;
           deal.upOrDown[2]=_upOrDown;
-          delayCaller(deal.timer,_dealId);
+          
            deal.state=2;
            uint256 totalAmount = deal.dealAmount[0] + deal.dealAmount[1] + deal.dealAmount[2];
-           depositToBento(_dealId,totalAmount);
+           depositToBento(_dealId,totalAmount); //deposit total amt staked with this pool to bento
+           delayCaller(deal.timer,_dealId); //setup delay to check for results after deal.timer seconds
         }
 
 
@@ -340,6 +360,7 @@ contract CNPMarket is ChainlinkClient, Ownable{
         request.addUint("until",block.timestamp + _timer);
         bytes32 requestId=sendChainlinkRequestTo(oracle_alarm, request, fee);
         requestIdTimerToDealId[requestId]=_dealId;
+        requestIds.push(requestId);
         deals[_dealId].state=3;
         
     }
@@ -367,6 +388,7 @@ contract CNPMarket is ChainlinkClient, Ownable{
         
         bytes32 requestId = sendChainlinkRequestTo(oracle_price, request, fee);
         requestIdPriceToDealId[requestId]=_dealId;
+        requestIds.push(requestId);
         deals[_dealId].state=5;
     }
     
@@ -387,14 +409,15 @@ contract CNPMarket is ChainlinkClient, Ownable{
         }
 
         withdrawFromBento(dealId);
-        upgrade(deal.amountBento);
+        uint256 totalAmount = deal.dealAmount[0] + deal.dealAmount[1] + deal.dealAmount[2];
+        upgrade(totalAmount);
         //decide winner addresses and store in winners array
         //calculate units & update index
         //distribute funds
         //claim for each participant
         uint winnerPie=0;
         uint128[] memory units=new uint128[](3);
-        uint256 totalAmount = deal.dealAmount[0] + deal.dealAmount[1] + deal.dealAmount[2];
+        
         for(uint i=0;i<3;i++) {
           if(deal.upOrDown[i]==winnerFlag) {
             deal.winners[i]=true;
@@ -411,17 +434,76 @@ contract CNPMarket is ChainlinkClient, Ownable{
           }
         }
 
+        deal.units=units;
         update(deal.initiator,units[0],deal.groupId);
         update(deal.joiner1,units[1],deal.groupId);
         update(deal.joiner2,units[2],deal.groupId);
 
         dist(deal.groupId,totalAmount);
 
+
+        //so instead of calling claim 3 times, we should ideally have all the pool members just call approveSubscription once
         claim(deal.initiator,deal.groupId);
         claim(deal.joiner1,deal.groupId);
         claim(deal.joiner2,deal.groupId);
 
         //buyKlimaFromRicochet(dealId);
+
+        deal.state=6;
+        emit DealCompleted(dealId);
+    }
+
+    function fulfill2(bytes32 _requestId, uint256 _result) public {
+        
+        uint dealId=requestIdPriceToDealId[_requestId];
+        Deal storage deal=deals[dealId];
+        deal.result=_result;
+        uint winnerFlag=0;
+        if(_result >= deal.val*(10**18)) {
+            winnerFlag=1;
+        }
+
+        withdrawFromBento(dealId);
+        uint256 totalAmount = deal.dealAmount[0] + deal.dealAmount[1] + deal.dealAmount[2];
+        upgrade(totalAmount);
+        //decide winner addresses and store in winners array
+        //calculate units & update index
+        //distribute funds
+        //claim for each participant
+        uint winnerPie=0;
+        uint128[] memory units=new uint128[](3);
+        
+        for(uint i=0;i<3;i++) {
+          if(deal.upOrDown[i]==winnerFlag) {
+            deal.winners[i]=true;
+            winnerPie+=deal.dealAmount[i];
+          }
+        }
+     
+        for(uint i=0;i<3;i++) {
+          if(deal.winners[i]) {
+            units[i]=(uint128)((deal.dealAmount[i]*100)/winnerPie);
+          }
+          else {
+            units[i]=0;
+          }
+        }
+
+        deal.units=units;
+        update(deal.initiator,units[0],deal.groupId);
+        update(deal.joiner1,units[1],deal.groupId);
+        update(deal.joiner2,units[2],deal.groupId);
+
+        dist(deal.groupId,totalAmount);
+
+
+        //so instead of calling claim 3 times, we should ideally have all the pool members just call approveSubscription once
+        claim(deal.initiator,deal.groupId);
+        claim(deal.joiner1,deal.groupId);
+        claim(deal.joiner2,deal.groupId);
+
+        //buyKlimaFromRicochet(dealId);
+
         deal.state=6;
         emit DealCompleted(dealId);
     }
